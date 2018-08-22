@@ -112,11 +112,10 @@ namespace System.Globalization
             return FindStringOrdinal(FIND_FROMEND, source, startIndex - count + 1, count, value, value.Length, ignoreCase);
         }
 
-        private unsafe int GetHashCodeOfStringCore(string source, CompareOptions options)
+        private unsafe int GetHashCodeOfStringCore(ReadOnlyMemory<char> source, CompareOptions options)
         {
             Debug.Assert(!_invariantMode);
 
-            Debug.Assert(source != null);
             Debug.Assert((options & (CompareOptions.Ordinal | CompareOptions.OrdinalIgnoreCase)) == 0);
 
             if (source.Length == 0)
@@ -126,8 +125,9 @@ namespace System.Globalization
 
             uint flags = LCMAP_SORTKEY | (uint)GetNativeCompareFlags(options);
 
-            fixed (char* pSource = source)
+            using (var pin = source.Pin())
             {
+                char* pSource = (char*)pin.Pointer;
                 int sortKeyLength = Interop.Kernel32.LCMapStringEx(_sortHandle != IntPtr.Zero ? null : _sortName,
                                                   flags,
                                                   pSource, source.Length,
@@ -167,6 +167,21 @@ namespace System.Globalization
             }
         }
 
+        internal static unsafe int CompareStringOrdinalIgnoreCase(ReadOnlyMemory<char> string1, ReadOnlyMemory<char> string2)
+        {
+            using (var pin1 = string1.Pin())
+            using (var pin2 = string2.Pin())
+            {
+                char* char1 = (char*)pin1.Pointer;
+                char* char2 = (char*)pin2.Pointer;
+                int count1 = string1.Length;
+                int count2 = string2.Length;
+
+                // Use the OS to compare and then convert the result to expected value by subtracting 2 
+                return Interop.Kernel32.CompareStringOrdinal(char1, count1, char2, count2, true) - 2;
+            }
+        }
+
         private static unsafe int CompareStringOrdinalIgnoreCase(ref char string1, int count1, ref char string2, int count2)
         {
             Debug.Assert(!GlobalizationMode.Invariant);
@@ -182,9 +197,8 @@ namespace System.Globalization
         // TODO https://github.com/dotnet/coreclr/issues/13827:
         // This method shouldn't be necessary, as we should be able to just use the overload
         // that takes two spans.  But due to this issue, that's adding significant overhead.
-        private unsafe int CompareString(ReadOnlySpan<char> string1, string string2, CompareOptions options)
+        private unsafe int CompareString(ReadOnlySpan<char> string1, ReadOnlyMemory<char> string2, CompareOptions options)
         {
-            Debug.Assert(string2 != null);
             Debug.Assert(!_invariantMode);
             Debug.Assert((options & (CompareOptions.Ordinal | CompareOptions.OrdinalIgnoreCase)) == 0);
 
@@ -192,27 +206,31 @@ namespace System.Globalization
 
             fixed (char* pLocaleName = localeName)
             fixed (char* pString1 = &MemoryMarshal.GetReference(string1))
-            fixed (char* pString2 = &string2.GetRawStringData())
             {
-                Debug.Assert(pString1 != null);
-                int result = Interop.Kernel32.CompareStringEx(
-                                    pLocaleName,
-                                    (uint)GetNativeCompareFlags(options),
-                                    pString1,
-                                    string1.Length,
-                                    pString2,
-                                    string2.Length,
-                                    null,
-                                    null,
-                                    _sortHandle);
-
-                if (result == 0)
+                using (var pin2 = string2.Pin())
                 {
-                    throw new ArgumentException(SR.Arg_ExternalException);
-                }
+                    char* pString2 = (char*)pin2.Pointer;
 
-                // Map CompareStringEx return value to -1, 0, 1.
-                return result - 2;
+                    Debug.Assert(pString1 != null);
+                    int result = Interop.Kernel32.CompareStringEx(
+                                        pLocaleName,
+                                        (uint)GetNativeCompareFlags(options),
+                                        pString1,
+                                        string1.Length,
+                                        pString2,
+                                        string2.Length,
+                                        null,
+                                        null,
+                                        _sortHandle);
+
+                    if (result == 0)
+                    {
+                        throw new ArgumentException(SR.Arg_ExternalException);
+                    }
+
+                    // Map CompareStringEx return value to -1, 0, 1.
+                    return result - 2;
+                }
             }
         }
 

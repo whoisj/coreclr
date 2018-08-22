@@ -5,13 +5,21 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
+using Internal.Runtime.CompilerServices;
+
+#if BIT64
+using nuint = System.UInt64;
+#else
+using nuint = System.UInt32;
+#endif
 
 namespace System
 {
     [Serializable]
     [System.Runtime.CompilerServices.TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
-    public abstract class StringComparer : IComparer, IEqualityComparer, IComparer<string>, IEqualityComparer<string>
+    public abstract class StringComparer : IComparer, IEqualityComparer, IComparer<string>, IComparer<ReadOnlyMemory<char>>, IEqualityComparer<string>, IEqualityComparer<ReadOnlyMemory<char>>
     {
         private static readonly CultureAwareComparer s_invariantCulture = new CultureAwareComparer(CultureInfo.InvariantCulture, CompareOptions.None);
         private static readonly CultureAwareComparer s_invariantCultureIgnoreCase = new CultureAwareComparer(CultureInfo.InvariantCulture, CompareOptions.IgnoreCase);
@@ -166,8 +174,11 @@ namespace System
         }
 
         public abstract int Compare(string x, string y);
+        public abstract int Compare(ReadOnlyMemory<char> lhs, ReadOnlyMemory<char> rhs);
         public abstract bool Equals(string x, string y);
+        public abstract bool Equals(ReadOnlyMemory<char> lhs, ReadOnlyMemory<char> rhs);
         public abstract int GetHashCode(string obj);
+        public abstract int GetHashCode(ReadOnlyMemory<char> obj);
     }
 
     [Serializable]
@@ -213,11 +224,21 @@ namespace System
             return _compareInfo.Compare(x, y, _options);
         }
 
+        public override int Compare(ReadOnlyMemory<char> lhs, ReadOnlyMemory<char> rhs)
+        {
+            return _compareInfo.Compare(lhs, rhs, _options);
+        }
+
         public override bool Equals(string x, string y)
         {
             if (object.ReferenceEquals(x, y)) return true;
             if (x == null || y == null) return false;
             return _compareInfo.Compare(x, y, _options) == 0;
+        }
+
+        public override bool Equals(ReadOnlyMemory<char> lhs, ReadOnlyMemory<char> rhs)
+        {
+            return _compareInfo.Compare(lhs, rhs, _options) == 0;
         }
 
         public override int GetHashCode(string obj)
@@ -226,6 +247,11 @@ namespace System
             {
                 throw new ArgumentNullException(nameof(obj));
             }
+            return _compareInfo.GetHashCodeOfString(obj, _options);
+        }
+
+        public override int GetHashCode(ReadOnlyMemory<char> obj)
+        {
             return _compareInfo.GetHashCodeOfString(obj, _options);
         }
 
@@ -280,6 +306,13 @@ namespace System
             return string.CompareOrdinal(x, y);
         }
 
+        public override int Compare(ReadOnlyMemory<char> lhs, ReadOnlyMemory<char> rhs)
+        {
+            return _ignoreCase
+                ? string.Compare(lhs, rhs, StringComparison.OrdinalIgnoreCase)
+                : string.CompareOrdinal(lhs, rhs);
+        }
+
         public override bool Equals(string x, string y)
         {
             if (ReferenceEquals(x, y))
@@ -298,6 +331,18 @@ namespace System
             return x.Equals(y);
         }
 
+        public override bool Equals(ReadOnlyMemory<char> lhs, ReadOnlyMemory<char> rhs)
+        {
+            if (lhs.Length != rhs.Length)
+                return false;
+
+            return _ignoreCase
+                ? CompareInfo.CompareOrdinalIgnoreCase(lhs, rhs) == 0
+                : SpanHelpers.SequenceEqual(ref Unsafe.As<char, byte>(ref MemoryMarshal.GetNonNullPinnableReference(lhs.Span)),
+                                            ref Unsafe.As<char, byte>(ref MemoryMarshal.GetNonNullPinnableReference(rhs.Span)),
+                                            ((nuint)lhs.Length) * 2);
+        }
+
         public override int GetHashCode(string obj)
         {
             if (obj == null)
@@ -311,6 +356,13 @@ namespace System
             }
 
             return obj.GetHashCode();
+        }
+
+        public override int GetHashCode(ReadOnlyMemory<char> obj)
+        {
+            return _ignoreCase
+                ? CompareInfo.GetIgnoreCaseHash(obj)
+                : obj.GetHashCode();
         }
 
         // Equals method for the comparer itself. 

@@ -300,7 +300,30 @@ namespace System.Globalization
             return (Compare(string1, string2, CompareOptions.None));
         }
 
+        public virtual int Compare(ReadOnlyMemory<char> string1, ReadOnlyMemory<char> string2)
+            => Compare(string1, string2, CompareOptions.None);
+
         public virtual int Compare(string string1, string string2, CompareOptions options)
+        {
+            //Our paradigm is that null sorts less than any other string and
+            //that two nulls sort as equal.
+            if (string1 == null)
+            {
+                if (string2 == null)
+                {
+                    return (0);     // Equal
+                }
+                return (-1);    // null < non-null
+            }
+            if (string2 == null)
+            {
+                return (1);     // non-null > null
+            }
+
+            return Compare(string1.AsMemory(), string2.AsMemory(), options);
+        }
+
+        public virtual int Compare(ReadOnlyMemory<char> string1, ReadOnlyMemory<char> string2, CompareOptions options)
         {
             if (options == CompareOptions.OrdinalIgnoreCase)
             {
@@ -323,21 +346,6 @@ namespace System.Globalization
                 throw new ArgumentException(SR.Argument_InvalidFlag, nameof(options));
             }
 
-            //Our paradigm is that null sorts less than any other string and
-            //that two nulls sort as equal.
-            if (string1 == null)
-            {
-                if (string2 == null)
-                {
-                    return (0);     // Equal
-                }
-                return (-1);    // null < non-null
-            }
-            if (string2 == null)
-            {
-                return (1);     // non-null > null
-            }
-
             if (_invariantMode)
             {
                 if ((options & CompareOptions.IgnoreCase) != 0)
@@ -346,7 +354,7 @@ namespace System.Globalization
                 return string.CompareOrdinal(string1, string2);
             }
 
-            return CompareString(string1.AsSpan(), string2.AsSpan(), options);
+            return CompareString(string1.Span, string2.Span, options);
         }
 
         // TODO https://github.com/dotnet/coreclr/issues/13827:
@@ -354,9 +362,20 @@ namespace System.Globalization
         // that takes two spans.  But due to this issue, that's adding significant overhead.
         internal int Compare(ReadOnlySpan<char> string1, string string2, CompareOptions options)
         {
+            // null sorts less than any other string.
+            if (string2 == null)
+            {
+                return 1;
+            }
+
+            return Compare(string1, string2.AsMemory(), options);
+        }
+
+        internal int Compare(ReadOnlySpan<char> string1, ReadOnlyMemory<char> string2, CompareOptions options)
+        {
             if (options == CompareOptions.OrdinalIgnoreCase)
             {
-                return CompareOrdinalIgnoreCase(string1, string2.AsSpan());
+                return CompareOrdinalIgnoreCase(string1, string2.Span);
             }
 
             // Verify the options before we do any real comparison.
@@ -367,7 +386,7 @@ namespace System.Globalization
                     throw new ArgumentException(SR.Argument_CompareOptionOrdinal, nameof(options));
                 }
 
-                return string.CompareOrdinal(string1, string2.AsSpan());
+                return string.CompareOrdinal(string1, string2.Span);
             }
 
             if ((options & ValidCompareMaskOffFlags) != 0)
@@ -375,17 +394,11 @@ namespace System.Globalization
                 throw new ArgumentException(SR.Argument_InvalidFlag, nameof(options));
             }
 
-            // null sorts less than any other string.
-            if (string2 == null)
-            {
-                return 1;
-            }
-
             if (_invariantMode)
             {
                 return (options & CompareOptions.IgnoreCase) != 0 ?
-                    CompareOrdinalIgnoreCase(string1, string2.AsSpan()) :
-                    string.CompareOrdinal(string1, string2.AsSpan());
+                    CompareOrdinalIgnoreCase(string1, string2.Span) :
+                    string.CompareOrdinal(string1, string2.Span);
             }
 
             return CompareString(string1, string2, options);
@@ -536,6 +549,11 @@ namespace System.Globalization
                 lengthB);
         }
 
+        internal static int CompareOrdinalIgnoreCase(ReadOnlyMemory<char> strA, ReadOnlyMemory<char> strB)
+        {
+            return CompareStringOrdinalIgnoreCase(strA, strB);
+        }
+
         internal static int CompareOrdinalIgnoreCase(ReadOnlySpan<char> strA, ReadOnlySpan<char> strB)
         {
             return CompareOrdinalIgnoreCase(ref MemoryMarshal.GetReference(strA), strA.Length, ref MemoryMarshal.GetReference(strB), strB.Length);
@@ -593,7 +611,6 @@ namespace System.Globalization
 
             return CompareStringOrdinalIgnoreCase(ref charA, lengthA - range, ref charB, lengthB - range);
         }
-
 
         internal static bool EqualsOrdinalIgnoreCase(ref char strA, ref char strB, int length)
         {
@@ -1291,12 +1308,23 @@ namespace System.Globalization
                 return source.GetHashCode();
             }
 
+            return GetIgnoreCaseHash(source.AsMemory());
+        }
+
+        internal static unsafe int GetIgnoreCaseHash(ReadOnlyMemory<char> source)
+        {
+            // Do not allocate on the stack if string is empty
+            if (source.Length == 0)
+            {
+                return source.GetHashCode();
+            }
+
             char[] borrowedArr = null;
             Span<char> span = source.Length <= 255 ?
                 stackalloc char[255] :
                 (borrowedArr = ArrayPool<char>.Shared.Rent(source.Length));
 
-            int charsWritten = source.AsSpan().ToUpperInvariant(span);
+            int charsWritten = source.Span.ToUpperInvariant(span);
 
             // Slice the array to the size returned by ToUpperInvariant.
             int hash = Marvin.ComputeHash32(MemoryMarshal.AsBytes(span.Slice(0, charsWritten)), Marvin.DefaultSeed);
@@ -1354,8 +1382,11 @@ namespace System.Globalization
                 return ((options & CompareOptions.IgnoreCase) != 0) ? GetIgnoreCaseHash(source) : source.GetHashCode();
             }
 
-            return GetHashCodeOfStringCore(source, options);
+            return GetHashCodeOfStringCore(source.AsMemory(), options);
         }
+
+        internal int GetHashCodeOfString(ReadOnlyMemory<char> source, CompareOptions options)
+            => GetHashCodeOfStringCore(source, options);
 
         public virtual int GetHashCode(string source, CompareOptions options)
         {
